@@ -336,7 +336,7 @@ pub fn interrogate_model<'ir, B: BV, T: Target>(
         }
     }
 
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
         SmtResult::Unsat => return Err(ExecError::Z3Error(String::from("Unsatisfiable at recheck"))),
         SmtResult::Unknown => return Err(ExecError::Z3Unknown),

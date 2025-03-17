@@ -387,7 +387,7 @@ pub fn write_capability_data<B: BV, T: Target>(
     for (i, (reg, value)) in gprs.iter().enumerate() {
         let value_except_tag = value.slice(0, 128).unwrap();
         writeln!(asm_file, "\t/* C{} */", reg)?;
-        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
         if !value.slice(128, 1).unwrap().is_zero() {
             extra_tags.push(format!("initial_cap_values + {}", i * 16));
         }
@@ -403,7 +403,7 @@ pub fn write_capability_data<B: BV, T: Target>(
     for (i, (reg, value)) in post_gprs.iter().enumerate() {
         let value_except_tag = value.slice(0, 128).unwrap();
         writeln!(asm_file, "\t/* C{} */", reg)?;
-        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
         if !value.slice(128, 1).unwrap().is_zero() {
             extra_tags.push(format!("final_cap_values + {}", i * 16));
         }
@@ -424,7 +424,7 @@ pub fn write_capability_data<B: BV, T: Target>(
                 };
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "initial_{}_value:", reg)?;
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
             if !value.slice(128, 1).unwrap().is_zero() {
                 extra_tags.push(format!("initial_{}_value", reg));
             }
@@ -441,7 +441,7 @@ pub fn write_capability_data<B: BV, T: Target>(
         if reg == "SP_EL3" || reg == "PCC" || system_cap_map.contains_key(reg) {
             let value_except_tag = value.slice(0, 128).unwrap();
             writeln!(asm_file, "final_{}_value:", reg)?;
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
             if !value.slice(128, 1).unwrap().is_zero() {
                 extra_tags.push(format!("final_{}_value", reg));
             }
@@ -459,13 +459,13 @@ pub fn write_capability_data<B: BV, T: Target>(
         writeln!(asm_file, "pcc_return_ddc_capabilities:")?;
         writeln!(asm_file, "\t.dword pcc_return_ddc_capabilities")?;
         writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
-        writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+        writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
         writeln!(asm_file, "\t.dword finish")?;
         writeln!(asm_file, "\t.dword 0xFFFFC00000010005")?;
         if let Some(GroundVal::Bits(value,m)) = pre_post_states.pre_registers.get(&("zDDC_EL3", vec![])) {
             assert!(m.is_zero());
             let value_except_tag = value.slice(0, 128).unwrap();
-            writeln!(asm_file, "\t.octa 0x{:#x}", value_except_tag)?;
+            writeln!(asm_file, "\t.octa {:#x}", value_except_tag)?;
             if !value.slice(128, 1).unwrap().is_zero() {
                 extra_tags.push(String::from("pcc_return_ddc_capabilities + 48"));
             }

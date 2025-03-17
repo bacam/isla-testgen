@@ -43,7 +43,7 @@ use crate::undef_checker::check_undefined_bits;
 use isla_lib::bitvector::{BV, b64::B64};
 use isla_lib::error::ExecError;
 use isla_lib::executor;
-use isla_lib::executor::{freeze_frame, Frame, LocalFrame, StopConditions, TaskState};
+use isla_lib::executor::{freeze_frame, Frame, LocalFrame, Run, StopConditions, TaskId, TaskState};
 use isla_lib::ir::*;
 use isla_lib::source_loc::SourceLoc;
 use isla_lib::memory::{Memory, SmtKind};
@@ -254,7 +254,7 @@ fn resolve_concrete_pc<'ir, B: BV>(
             let pc_addr = apply_accessor_val(shared_state, full_val, &pc_accessor);
             match pc_addr {
 	        Val::Symbolic(v) => {
-	            if solver.check_sat().is_unsat().map_err(|e| format!("{}", e))? {
+	            if solver.check_sat(SourceLoc::unknown()).is_unsat().map_err(|e| format!("{}", e))? {
 		        return Err(String::from("Unsatisfiable in post-processing"));
 	            }
 	            let model_val = {
@@ -263,7 +263,7 @@ fn resolve_concrete_pc<'ir, B: BV>(
 	            };
 	            match model_val {
 		        Some(Exp::Bits64(result)) => {
-		            if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))))
+		            if solver.check_sat_with(&Exp::Neq(Box::new(Exp::Var(*v)), Box::new(Exp::Bits64(result))), SourceLoc::unknown())
 			        .is_unsat().map_err(|e| format!("{}", e))? {
 			            let bits = B::new(result.lower_u64(), result.len());
 			            // Cache the concrete value
@@ -288,18 +288,17 @@ fn resolve_concrete_pc<'ir, B: BV>(
 }
 
 fn just_check<B: BV>(solver: &mut Solver<B>, s: &str) -> Result<(), String> {
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => Ok(()),
         SmtResult::Unsat => Err(format!("Unsatisfiable at {}", s)),
         SmtResult::Unknown => Err(format!("Solver returned unknown at {}", s)),
     }
 }
     
-
 fn postprocess<'ir, B: BV, T: Target>(
     target: &T,
     tid: usize,
-    _task_id: usize,
+    _task_id: TaskId,
     mut local_frame: LocalFrame<'ir, B>,
     shared_state: &SharedState<'ir, B>,
     mut solver: Solver<B>,
@@ -351,7 +350,7 @@ fn postprocess<'ir, B: BV, T: Target>(
     
     target.postprocess(shared_state, &local_frame, &mut solver)?;
 
-    let result = match solver.check_sat() {
+    let result = match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => Ok((freeze_frame(&local_frame), smt::checkpoint(&mut solver))),
         SmtResult::Unsat => Err(String::from("unsatisfiable")),
         SmtResult::Unknown => Err(String::from("solver returned unknown")),
@@ -366,7 +365,7 @@ fn get_opcode<B: BV>(checkpoint: Checkpoint<B>, opcode_var: Sym) -> Result<u32, 
     cfg.set_param_value("model", "true");
     let ctx = smt::Context::new(cfg);
     let mut solver = Solver::from_checkpoint(&ctx, checkpoint);
-    match solver.check_sat() {
+    match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => (),
         SmtResult::Unsat => return Err(String::from("Unsatisfiable at recheck")),
         SmtResult::Unknown => return Err(String::from("Solver returned unknown at recheck")),
@@ -397,7 +396,7 @@ pub fn apply_accessor_type<'a, B: BV>(
                 let name =
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match ty {
-                    Ty::Struct(struct_name) => ty = shared_state.structs.get(struct_name).unwrap().get(&name).unwrap(),
+                    Ty::Struct(struct_name) => ty = shared_state.type_info.structs.get(struct_name).unwrap().get(&name).unwrap(),
                     _ => panic!("Bad type for struct {:?}", ty),
                 }
             }
@@ -425,13 +424,13 @@ pub fn apply_accessor_val_mut<'a, B: BV>(
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get_mut(&name).unwrap(),
-                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for struct {}", val.to_string(shared_state)),
                 }
             }
             GVAccessor::Element(i) => {
                 match val {
                     Val::Vector(elements) => val = &mut elements[*i],
-                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for vector {}", val.to_string(shared_state)),
                 }
             }
         }
@@ -451,13 +450,13 @@ pub fn apply_accessor_val<'a, B: BV>(
                     shared_state.symtab.get(&zencode::encode(&s)).unwrap_or_else(|| panic!("No field called {}", s));
                 match val {
                     Val::Struct(field_vals) => val = field_vals.get(&name).unwrap(),
-                    _ => panic!("Bad val for struct {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for struct {}", val.to_string(shared_state)),
                 }
             }
             GVAccessor::Element(i) => {
                 match val {
                     Val::Vector(elements) => val = &elements[*i],
-                    _ => panic!("Bad val for vector {}", val.to_string(&shared_state.symtab)),
+                    _ => panic!("Bad val for vector {}", val.to_string(shared_state)),
                 }
             }
         }
@@ -600,16 +599,17 @@ pub fn run_function<'ir, B: BV>(
     let task_state = TaskState::new();
     let task = frame
         .new_call(fn_id, arg_tys, ret_ty, Some(&args), instrs)
-        .task_with_checkpoint(1, &task_state, checkpoint);
+        .task_with_checkpoint(TaskId::fresh(), &task_state, checkpoint);
 
     executor::start_single(
         task,
         &shared_state,
         &results,
         &move |_tid, _task_id, result, _shared_state, mut solver, results| match result {
-            Ok((val, frame)) => {
+            Ok((Run::Finished(val), frame)) => {
                 results.push((val, frame, smt::checkpoint(&mut solver)));
             }
+            Ok((Run::Exit | Run::Suspended | Run::Dead, _)) => (),
             Err(err) => eprintln!("Helper function {} failed: {:?}", function_name, err),
         },
     );
@@ -639,7 +639,7 @@ pub fn init_model<'ir, B: BV>(
         .add_lets(&lets)
         .add_regs(&regs)
         .set_memory(memory.clone())
-        .task(0, &task_state);
+        .task(TaskId::fresh(), &task_state);
 
     executor::start_single(
         init_task,
@@ -713,7 +713,7 @@ pub fn setup_opcode<'ir, B: BV, T: Target>(
     let read_exp = smt_value(&read_val).unwrap();
     solver.add(Def::Assert(Exp::Eq(Box::new(Exp::Var(opcode_var)), Box::new(read_exp))));
 
-    let ok = match solver.check_sat() {
+    let ok = match solver.check_sat(SourceLoc::unknown()) {
         SmtResult::Sat => true,
         SmtResult::Unsat => {
             println!("Placing opcode in memory unsatisfiable");
@@ -757,7 +757,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
 
     let task_state = TaskState::new();
     let mut task =
-        local_frame.new_call(function_id, args, ret_ty, Some(&[Val::Unit]), instrs).task_with_checkpoint(1, &task_state, checkpoint);
+        local_frame.new_call(function_id, args, ret_ty, Some(&[Val::Unit]), instrs).task_with_checkpoint(TaskId::fresh(), &task_state, checkpoint);
     task.set_stop_conditions(stop_set);
 
     let queue = Arc::new(SegQueue::new());
@@ -772,14 +772,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
         &move |tid, task_id, result, shared_state, mut solver, collected| {
             log_from!(tid, log::VERBOSE, "Collecting");
             match result {
-                Ok((val, mut frame)) => {
+                Ok((Run::Finished(val), mut frame)) => {
                     target.post_instruction(shared_state, &mut frame, &mut solver);
-                    let check = solver.check_sat();
+                    let check = solver.check_sat(SourceLoc::unknown());
                     // We always need events to do the undefined bits check
                     let events = events_of(&solver, true);
                     if matches!(check, SmtResult::Sat) {
                         if let Some((ex_val, ex_loc)) = frame.get_exception() {
-                            let s = ex_val.to_string(&shared_state.symtab);
+                            let s = ex_val.to_string(shared_state);
                             collected.push((Err(format!("Exception thrown: {} at {}", s, ex_loc)), events))
                         } else {
                             if let Err(m) =
@@ -806,10 +806,10 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                         collected.push((Err(format!("Post-instruction check failed with {:?}", check)), events))
                     }
                 }
-                Err((ExecError::Dead, _)) => {
+                Ok((Run::Exit | Run::Suspended | Run::Dead, _)) => {
                     let events = events_of(&solver, dump_events);
-                    log_from!(tid, log::VERBOSE, "dead");
-                    collected.push((Err(String::from("dead")), events))
+                    log_from!(tid, log::VERBOSE, "bad run");
+                    collected.push((Err(String::from("bad run")), events))
                 }
                 Err((assertion @ ExecError::AssertionFailure(_, _), backtrace)) if assertion_events => {
                     let events = events_of(&solver, true);
@@ -850,7 +850,7 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
                     let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                    write_events(&mut handle, &events, &shared_state.symtab);
+                    write_events(&mut handle, &events, shared_state);
                 }
                 result.push((new_frame, new_checkpoint));
             }
@@ -862,14 +862,14 @@ pub fn run_model_instruction<'ir, B: BV, T: Target>(
                     let stdout = std::io::stderr();
                     let mut handle = stdout.lock();
                     let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                    write_events(&mut handle, &events, &shared_state.symtab);
+                    write_events(&mut handle, &events, shared_state);
                 }
                 if let Some(file_name) = assertion_reports {
                     if msg.starts_with("Assertion") {
                         let mut report_file = OpenOptions::new().append(true).create(true).open(file_name).unwrap();
                         write!(report_file, "{}", msg).unwrap();
                         let events: Vec<Event<B>> = events.drain(..).rev().collect();
-                        write_events(&mut report_file, &events, &shared_state.symtab);
+                        write_events(&mut report_file, &events, shared_state);
                     }
                 }
             }

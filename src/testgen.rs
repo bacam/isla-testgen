@@ -238,7 +238,7 @@ fn testgen_main<T: Target, B: BV>(
     arch: opts::Architecture<B>,
 ) -> i32 {
     // TODO: use source_path
-    let CommonOpts { num_threads, mut arch, symtab, isa_config, source_path: _ } =
+    let CommonOpts { num_threads, mut arch, symtab, isa_config, type_info, source_path: _ } =
         opts::parse_with_arch(&mut hasher, &opts, &matches, &arch);
 
     let max_retries = matches.opt_get_default("max-retries", 10).expect("Bad max-retries argument");
@@ -267,13 +267,13 @@ fn testgen_main<T: Target, B: BV>(
     let register_types: HashMap<Name, Ty<Name>> = arch
         .iter()
         .filter_map(|d| match d {
-            Def::Register(reg, ty) => Some((*reg, ty.clone())),
+            Def::Register(reg, ty, _) => Some((*reg, ty.clone())),
             _ => None,
         })
         .collect();
 
     let Initialized { regs, mut lets, shared_state } =
-        initialize_architecture(&mut arch, symtab, &isa_config, AssertionMode::Optimistic);
+        initialize_architecture(&mut arch, symtab, type_info, &isa_config, AssertionMode::Optimistic, true);
 
     let regions = matches.opt_strs("memory-region");
     let symbolic_regions: Vec<Range<u64>> =
@@ -521,7 +521,7 @@ fn generate_test<'ir, B: BV, T: Target>(
         let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
         let mut events = trace.to_vec();
         let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-        write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+        write_events(&mut std::io::stdout(), &events, &conf.shared_state);
     }
 
     println!("Initial state extracted from events:");
@@ -747,7 +747,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                 let trace = checkpoint.trace().as_ref().ok_or(GenerationError("No trace".to_string()))?;
                 let mut events = trace.to_vec();
                 let events: Vec<Event<B>> = events.drain(..).cloned().rev().collect();
-                write_events(&mut std::io::stdout(), &events, &conf.shared_state.symtab);
+                write_events(&mut std::io::stdout(), &events, &conf.shared_state);
             }
             
             println!("Initial state extracted from events:");
