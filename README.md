@@ -41,7 +41,7 @@ the instruction encodings:
 
 2. Install [Sail](https://github.com/rems-project/sail).  Isla
    currently uses an in-development version rather than a release, for
-   compatibility clone the repository at commit `35566375` and install
+   compatibility clone the repository at commit `e5bbe70f` and install
    it locally with
    ```
    opam install .
