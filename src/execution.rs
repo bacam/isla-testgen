@@ -61,7 +61,7 @@ fn smt_value<B: BV>(v: &Val<B>) -> Result<smtlib::Exp<Sym>, ExecError> {
     isla_lib::primop_util::smt_value(v, SourceLoc::unknown())
 }
 
-fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib::Exp<Sym> {
+fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, addr_size: u32, bytes: u64) -> smtlib::Exp<Sym> {
     use smtlib::Exp;
     // TODO: endianness?
     let mut mem_exp = Exp::Select(Box::new(Exp::Var(memory)), Box::new(addr_exp.clone()));
@@ -69,7 +69,7 @@ fn smt_read_exp(memory: Sym, addr_exp: &smtlib::Exp<Sym>, bytes: u64) -> smtlib:
         mem_exp = Exp::Concat(
             Box::new(Exp::Select(
                 Box::new(Exp::Var(memory)),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, addr_size)))),
             )),
             Box::new(mem_exp),
         )
@@ -89,6 +89,7 @@ struct SeqMemory {
     translation_table: Option<TranslationTableInfo>,
     memory_var: Sym,
     tag_memory_var: Sym,
+    addr_size: u32,
 }
 
 impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
@@ -109,7 +110,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         let addr_exp = smt_value(address).unwrap_or_else(|err| panic!("Bad read address value {:?}: {}", address, err));
         let mut read_prop = Exp::Eq(
             Box::new(read_exp.clone()),
-            Box::new(smt_read_exp(self.memory_var, &addr_exp, bytes as u64)),
+            Box::new(smt_read_exp(self.memory_var, &addr_exp, self.addr_size, bytes as u64)),
         );
         let tag_exp = match tag {
             Some(tag_value) => {
@@ -177,7 +178,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         for i in 1..bytes {
             mem_exp = Exp::Store(
                 Box::new(mem_exp),
-                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, 64)))),
+                Box::new(Exp::Bvadd(Box::new(addr_exp.clone()), Box::new(bits64(i as u64, self.addr_size)))),
                 Box::new(Exp::Extract(i * 8 + 7, i * 8, Box::new(data_exp.clone()))),
             )
         }
@@ -191,7 +192,7 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
             }
             None => (
                 bits64(0, 1),
-                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(bits64(0xffff_ffff_ffff_fff0u64, 64))),
+                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bvnot(Box::new(bits64(0xfu64, self.addr_size))))),
             ),
         };
         let tag_mem_exp =
@@ -531,7 +532,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 
     let (pc_str, pc_acc) = target.pc_reg();
     let pc_id = shared_state.symtab.lookup(&pc_str);
-    let mut pc_full = local_frame.regs().get_last_if_initialized(pc_id).unwrap().clone();
+    let mut pc_full = local_frame.regs().get_last_if_initialized(pc_id).unwrap_or_else(|| panic!("PC not initialised")).clone();
     let pc_type = register_types.get(&pc_id).unwrap();
     let pc_addr = apply_accessor_val_mut(shared_state, &mut pc_full, &pc_acc);
     let pc_type = apply_accessor_type(shared_state, &pc_type, &pc_acc);
@@ -551,17 +552,17 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
 
     solver.add(smtlib::Def::DeclareConst(
         memory,
-        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(8))),
+        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(target.addr_size())), Box::new(smtlib::Ty::BitVec(8))),
     ));
     solver.add(smtlib::Def::DeclareConst(
         tag_memory_var,
-        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(64)), Box::new(smtlib::Ty::BitVec(1))),
+        smtlib::Ty::Array(Box::new(smtlib::Ty::BitVec(target.addr_size())), Box::new(smtlib::Ty::BitVec(1))),
     ));
 
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, &reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var });
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var, addr_size: target.addr_size() });
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 

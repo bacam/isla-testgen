@@ -204,6 +204,7 @@ fn isla_main() -> i32 {
         "morello-aarch64" => testgen_main(target::Morello { style: AArch64Compatible, translation_in_symbolic_execution }, hasher, opts, matches, arch),
         "x86" => testgen_main(target::X86 { style: X86Style::Plain }, hasher, opts, matches, arch),
         "c86" => testgen_main(target::X86 { style: X86Style::Cap }, hasher, opts, matches, arch),
+        "cheriot" => testgen_main(target::CHERIoT {}, hasher, opts, matches, arch),
         target_str => {
             eprintln!("Unknown target architecture: {}", target_str);
             1
