@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use isla_lib::bitvector::{BV, b64::B64};
+use isla_lib::config::ISAConfig;
 use isla_lib::executor::LocalFrame;
 use isla_lib::ir::{Name, SharedState, Ty, Val};
 use isla_lib::primop_util::smt_value;
@@ -40,7 +41,10 @@ use isla_lib::source_loc::SourceLoc;
 use isla_lib::zencode;
 
 use crate::execution;
-use crate::extract_state::GVAccessor;
+use crate::extract_state::{GVAccessor, PrePostStates};
+use crate::generate_object_arm;
+use crate::generate_object_cheriot;
+use crate::generate_object_common::BuildError;
 
 // For now we only need one entry in the translation table (and only
 // for Morello), so this is (address range, entry address, entry data).
@@ -122,6 +126,17 @@ where
     // by a runtime-determined anount, which happens in the Morello
     // specification's capability functions)
     fn supports_undef_checker(&self) -> bool;
+    // Whether we support the following two functions, or just test files
+    fn supports_generate_object(&self) -> bool;
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> ;
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError>;
 }
 
 pub struct Aarch64 {}
@@ -236,6 +251,23 @@ impl Target for Aarch64 {
     // TODO: try it, might work...
     fn supports_undef_checker(&self) -> bool {
         false
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_arm::build_elf_file(isa, base_name)
     }
 }
 
@@ -613,6 +645,23 @@ impl Target for Morello {
     fn supports_undef_checker(&self) -> bool {
         false
     }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_arm::build_elf_file(isa, base_name)
+    }
 }
 
 pub enum X86Style { Plain, Cap }
@@ -831,6 +880,23 @@ impl Target for X86 {
     fn supports_undef_checker(&self) -> bool {
         true
     }
+
+    fn supports_generate_object(&self) -> bool {
+        false
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        _base_name: &str,
+        _instr_map: &HashMap<B, String>,
+        _pre_post_states: PrePostStates<B>,
+        _entry_reg: u32,
+        _exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        panic!("Not supported")
+    }
+    fn build_elf_file<B>(&self, _isa: &ISAConfig<B>, _base_name: &str) -> Result<(), BuildError> {
+        panic!("Not supported")
+    }
 }
 
 pub struct CHERIoT { }
@@ -861,8 +927,7 @@ impl Target for CHERIoT {
     /// Registers that the harness wants even if they're not in the trace
     fn essential_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
     /// System registers that the harness should check
-    // Not checking the PCC for now because it's not clear how to check it
-    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![] }
+    fn post_regs(&self) -> Vec<(String, Vec<GVAccessor<String>>)> { vec![("PCC".to_string(), vec![])] }
     fn special_reg_init<'ctx, 'ir, B: BV>(
         &self,
         _reg: &str,
@@ -944,10 +1009,20 @@ impl Target for CHERIoT {
         &self,
         _shared_state: &SharedState<'ir, B>,
         _local_frame: &mut LocalFrame<'ir, B>,
-        _solver: &mut Solver<B>,
-        _init_pc: u64,
-        _regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
-    ) { }
+        solver: &mut Solver<B>,
+        init_pc: u64,
+        regs: &HashMap<(String, Vec<GVAccessor<String>>), Sym>,
+    ) {
+        for ((reg, _acc), v) in regs {
+            use isla_lib::smt::smtlib::*;
+            if reg == "PCC" {
+                // Force PC and PCC to match
+                solver.add(Def::Assert(Exp::Eq(
+                    Box::new(Exp::Extract(31, 0, Box::new(Exp::Var(*v)))),
+                    Box::new(bits64(init_pc, 32)))));
+            }
+        }
+    }
     fn post_instruction<'ir, B: BV>(
         &self,
         _shared_state: &SharedState<'ir, B>,
@@ -963,13 +1038,15 @@ impl Target for CHERIoT {
     fn is_gpr(name: &str) -> Option<u32> {
         if name.starts_with("zx") {
             let reg_str = &name[2..];
-            u32::from_str_radix(reg_str, 10).ok()
+            let i = u32::from_str_radix(reg_str, 10).ok()?;
+            // Adjust for the zero register
+            if i > 0 { Some(i-1) } else { None }
         } else {
             None
         }
     }
-    fn gpr_prefix() -> &'static str { panic!("not implemented"); }
-    fn gpr_pad() -> bool { panic!("not implemented"); }
+    fn gpr_prefix() -> &'static str { "zx" }
+    fn gpr_pad() -> bool { false }
     // There's a handle_exception too, but it's not used
     fn exception_stop_functions() -> Vec<String> { vec!["handle_mem_exception".to_string(), "handle_illegal".to_string(), "handle_cheri_cap_exception".to_string()] }
     fn postprocess<'ir, B: BV>(&self,
@@ -990,5 +1067,22 @@ impl Target for CHERIoT {
     }
     fn supports_undef_checker(&self) -> bool {
         false // TODO: maybe?
+    }
+
+    fn supports_generate_object(&self) -> bool {
+        true
+    }
+    fn make_asm_files<B: BV>(
+        &self,
+        base_name: &str,
+        instr_map: &HashMap<B, String>,
+        pre_post_states: PrePostStates<B>,
+        entry_reg: u32,
+        exit_reg: u32,
+    ) -> Result<(), Box<dyn std::error::Error>>  {
+        generate_object_cheriot::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+    }
+    fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
+        generate_object_cheriot::build_elf_file(isa, base_name)
     }
 }

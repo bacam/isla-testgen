@@ -53,7 +53,6 @@ use isla_testgen::acl2_insts_parser;
 use isla_testgen::asl_tag_files;
 use isla_testgen::execution::*;
 use isla_testgen::extract_state;
-use isla_testgen::generate_object;
 use isla_testgen::generate_testfile;
 use isla_testgen::target;
 use isla_testgen::target::Target;
@@ -543,8 +542,8 @@ fn generate_test<'ir, B: BV, T: Target>(
     if conf.generate_testfile {
         generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
     } else {
-        generate_object::make_asm_files(target, basename, &instr_map, initial_state, entry_reg, exit_reg)?;
-        generate_object::build_elf_file(conf.isa_config, basename)?;
+        target.make_asm_files(basename, &instr_map, initial_state, entry_reg, exit_reg)?;
+        target.build_elf_file(conf.isa_config, basename)?;
     }
 
     Ok(())
@@ -774,10 +773,10 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                             .unwrap_or_else(
                                 |error| println!("Failed to write test file: {}", error.to_string()));
                     } else {
-                        generate_object::make_asm_files(target, &basename_number, &instr_map, initial_state, entry_reg, exit_reg)
+                        target.make_asm_files(&basename_number, &instr_map, initial_state, entry_reg, exit_reg)
                             .map_err(|e| e.to_string())
                             .and_then(
-                                |_| generate_object::build_elf_file(conf.isa_config, &basename_number)
+                                |_| target.build_elf_file(conf.isa_config, &basename_number)
                                     .map_err(|e| e.to_string()))
                             .unwrap_or_else(
                                 |error| println!("Failed to construct test: {}", error));

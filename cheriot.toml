@@ -8,7 +8,7 @@ ifetch = "Read_ifetch"
 read_exclusives = []
 write_exclusives = []
 
-assembler = "clang -target riscv32-unknown-unknown -mcpu=cheriot -mabi=cheriot -mxcheri-rvc -c -x assembler -"
+assembler = "clang -target riscv32-unknown-unknown -mcpu=cheriot -mabi=cheriot -mxcheri-rvc -c -x assembler"
 objdump = "llvm-objdump"
 linker = "ld.lld"
 nm = "nm"

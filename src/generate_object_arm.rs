@@ -29,6 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 use crate::extract_state::{GVAccessor, GroundVal, PrePostStates};
+use crate::generate_object_common::*;
 use crate::target::Target;
 
 use isla_lib::bitvector::BV;
@@ -347,7 +348,7 @@ fn write_cap_esr_check(
     Ok(())
 }
 
-pub fn write_main_memory<B: BV>(
+fn write_main_memory<B: BV>(
     asm_file: &mut File,
     sections: &mut BTreeMap<u64, (String, Option<u64>)>,
     pre_post_states: &PrePostStates<B>,
@@ -370,7 +371,7 @@ pub fn write_main_memory<B: BV>(
     Ok(())
 }
 
-pub fn write_capability_data<B: BV, T: Target>(
+fn write_capability_data<B: BV, T: Target>(
     target: &T,
     asm_file: &mut File,
     gprs: &[(u32, B)],
@@ -1043,16 +1044,6 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     Ok(())
 }
-
-#[derive(Debug)]
-pub struct BuildError(String);
-
-impl std::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-impl Error for BuildError {}
 
 pub fn build_elf_file<B>(isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
     let assembler_result = isa
