@@ -143,6 +143,7 @@ fn write_main_memory<B: BV>(
     asm_file: &mut File,
     sections: &mut BTreeMap<u64, (String, Option<u64>)>,
     pre_post_states: &PrePostStates<B>,
+    harness_data: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut name = 0;
     for (region, contents) in pre_post_states.pre_memory.iter() {
@@ -151,7 +152,7 @@ fn write_main_memory<B: BV>(
         write_bytes(asm_file, contents)?;
         name += 1;
     }
-    sections.insert(0x80000400u64, (String::from(".data"), None)); /* TODO: parametrise */
+    sections.insert(harness_data, (String::from(".data"), None));
     name = 0;
     for (_region, contents) in pre_post_states.post_memory.iter() {
         writeln!(asm_file, ".data")?;
@@ -246,12 +247,20 @@ pub fn make_asm_files<B: BV, T: Target>(
     base_name: &str,
     instr_map: &HashMap<B, String>,
     pre_post_states: PrePostStates<B>,
+    harness_code: Option<u64>,
+    harness_data: Option<u64>,
+    uart: Option<u64>,
     entry_reg: u32,
     exit_reg: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Adjust spare register numbers for the zero register
     let entry_reg = entry_reg + 1;
     let _exit_reg = exit_reg + 1;
+
+    let harness_code = harness_code.unwrap_or(0x80000000);
+    let harness_data = harness_data.unwrap_or(0x80000400);
+    let uart = uart.unwrap_or(0x10000000);
+
     let mut asm_file = File::create(&format!("{}.s", base_name))?;
     let mut sections: BTreeMap<u64, (String, Option<u64>)> = BTreeMap::new();
 
@@ -298,8 +307,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tcsetaddr c\\reg, \\src, x\\reg")?;
     writeln!(asm_file, ".endmacro")?;
 
-    // FIXME: actual harness start
-    sections.insert(0x80000000, (String::from(".text"), None));
+    sections.insert(harness_code, (String::from(".text"), None));
 
     writeln!(asm_file, ".text")?;
     writeln!(asm_file, ".global preamble")?;
@@ -472,7 +480,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t.ascii \"FAILED\\n\\000\"")?;
 
     writeln!(asm_file, "")?;
-    write_main_memory(&mut asm_file, &mut sections, &pre_post_states)?;
+    write_main_memory(&mut asm_file, &mut sections, &pre_post_states, harness_data)?;
 
     if target.has_capabilities() {
     writeln!(asm_file, "")?;
@@ -492,7 +500,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 
     writeln!(ld_file, "}}")?;
     writeln!(ld_file, "ENTRY(preamble)")?;
-    writeln!(ld_file, "uart = 0x10000000;")?;
+    writeln!(ld_file, "uart = {:#010x};", uart)?;
     // We don't use htif, but cheriot_sim gets upset if you don't say where it is
     writeln!(ld_file, "tohost = 0x80001000;")?;
 

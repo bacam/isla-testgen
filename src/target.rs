@@ -56,8 +56,8 @@ where
 {
     /// Model initialisation function
     fn init_function(&self) -> String;
-    /// Test start address
-    fn init_pc(&self) -> u64;
+    /// Test start address when no code regions specified
+    fn default_init_pc(&self) -> u64;
     /// Size of memory addresses
     fn addr_size(&self) -> u32;
     /// Registers supported by the test harness
@@ -133,6 +133,9 @@ where
         base_name: &str,
         instr_map: &HashMap<B, String>,
         pre_post_states: PrePostStates<B>,
+        harness_code: Option<u64>,
+        harness_data: Option<u64>,
+        uart: Option<u64>,
         entry_reg: u32,
         exit_reg: u32,
     ) -> Result<(), Box<dyn std::error::Error>> ;
@@ -146,7 +149,7 @@ impl Target for Aarch64 {
         String::from("init")
     }
 
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         0x400000
     }
 
@@ -261,9 +264,13 @@ impl Target for Aarch64 {
         base_name: &str,
         instr_map: &HashMap<B, String>,
         pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
         entry_reg: u32,
         exit_reg: u32,
     ) -> Result<(), Box<dyn std::error::Error>>  {
+        // TODO: harness_code/_data, uart
         generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
     }
     fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
@@ -325,7 +332,7 @@ impl Target for Morello {
         String::from("__InitSystem")
     }
 
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         0x40400000
     }
 
@@ -654,9 +661,13 @@ impl Target for Morello {
         base_name: &str,
         instr_map: &HashMap<B, String>,
         pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
         entry_reg: u32,
         exit_reg: u32,
     ) -> Result<(), Box<dyn std::error::Error>>  {
+        // TODO: harness_code/_data, uart
         generate_object_arm::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
     }
     fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
@@ -694,7 +705,7 @@ impl Target for X86 {
         String::from("initialise_64_bit_mode")
     }
     /// Test start address
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         // Appears to be the default I got from ld on Linux
         0x401000
     }
@@ -889,6 +900,9 @@ impl Target for X86 {
         _base_name: &str,
         _instr_map: &HashMap<B, String>,
         _pre_post_states: PrePostStates<B>,
+        _harness_code: Option<u64>,
+        _harness_data: Option<u64>,
+        _uart: Option<u64>,
         _entry_reg: u32,
         _exit_reg: u32,
     ) -> Result<(), Box<dyn std::error::Error>>  {
@@ -907,7 +921,7 @@ impl Target for CHERIoT {
         String::from("isla_testgen_init")
     }
     /// Test start address
-    fn init_pc(&self) -> u64 {
+    fn default_init_pc(&self) -> u64 {
         // Default RAM start for the Sail simulator, also seen as start in the test-suite ELF built for the Sail simulator
         0x80000000
     }
@@ -1077,10 +1091,13 @@ impl Target for CHERIoT {
         base_name: &str,
         instr_map: &HashMap<B, String>,
         pre_post_states: PrePostStates<B>,
+        harness_code: Option<u64>,
+        harness_data: Option<u64>,
+        uart: Option<u64>,
         entry_reg: u32,
         exit_reg: u32,
     ) -> Result<(), Box<dyn std::error::Error>>  {
-        generate_object_cheriot::make_asm_files(self, base_name, instr_map, pre_post_states, entry_reg, exit_reg)
+        generate_object_cheriot::make_asm_files(self, base_name, instr_map, pre_post_states, harness_code, harness_data, uart, entry_reg, exit_reg)
     }
     fn build_elf_file<B>(&self, isa: &ISAConfig<B>, base_name: &str) -> Result<(), BuildError> {
         generate_object_cheriot::build_elf_file(isa, base_name)

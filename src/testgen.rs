@@ -178,6 +178,9 @@ fn isla_main() -> i32 {
     opts.optmulti("", "memory-region", "Add a memory region (overriding the default)", "<start[-end]>");
     opts.optopt("", "code-region", "Specify the region of memory to be used for code", "<start[-end]>");
     opts.optflag("", "sparse", "Omit untouched initial memory in test");
+    opts.optopt("", "harness-code", "Start address for test harness code", "<start>");
+    opts.optopt("", "harness-data", "Start address for test harness data", "<start>");
+    opts.optopt("", "uart", "Address for basic UART", "<address>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -286,11 +289,15 @@ fn testgen_main<T: Target, B: BV>(
         match matches.opt_str("code-region") {
             Some(s) => vec![range_parse(&s)],
             None => {
-                let init_pc: u64 = target.init_pc();
+                let init_pc: u64 = target.default_init_pc();
                 vec![init_pc..init_pc + 0x10000]
             }
         };
     let init_pc = symbolic_code_regions[0].start;
+
+    let harness_code = matches.opt_str("harness-code").map(|s| u64_parse(&s).expect("Bad harness code start address"));
+    let harness_data = matches.opt_str("harness-data").map(|s| u64_parse(&s).expect("Bad harness data start address"));
+    let uart = matches.opt_str("uart").map(|s| u64_parse(&s).expect("Bad UART address"));
 
     // NB: The current aarch64 model needs this, however we explicitly
     // override the PC when setting up the registers.
@@ -350,6 +357,9 @@ fn testgen_main<T: Target, B: BV>(
         sparse: matches.opt_present("sparse"),
         init_pc,
         register_map,
+        harness_code,
+        harness_data,
+        uart,
     };
 
     let all_paths_for = matches.opt_get("all-paths-for").expect("Bad all-paths-for argument");
@@ -428,6 +438,9 @@ struct TestConf<'ir, B: BV> {
     sparse: bool,
     init_pc: u64,
     register_map: HashMap<(String, Vec<extract_state::GVAccessor<String>>), Sym>,
+    harness_code: Option<u64>,
+    harness_data: Option<u64>,
+    uart: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -542,7 +555,7 @@ fn generate_test<'ir, B: BV, T: Target>(
     if conf.generate_testfile {
         generate_testfile::make_testfile(target, basename, &instr_map, initial_state, conf.init_pc, opcode_index)?;
     } else {
-        target.make_asm_files(basename, &instr_map, initial_state, entry_reg, exit_reg)?;
+        target.make_asm_files(basename, &instr_map, initial_state, conf.harness_code, conf.harness_data, conf.uart, entry_reg, exit_reg)?;
         target.build_elf_file(conf.isa_config, basename)?;
     }
 
@@ -773,7 +786,7 @@ fn generate_group_of_tests_around<'ir, B: BV, T: Target>(
                             .unwrap_or_else(
                                 |error| println!("Failed to write test file: {}", error.to_string()));
                     } else {
-                        target.make_asm_files(&basename_number, &instr_map, initial_state, entry_reg, exit_reg)
+                        target.make_asm_files(&basename_number, &instr_map, initial_state, conf.harness_code, conf.harness_data, conf.uart, entry_reg, exit_reg)
                             .map_err(|e| e.to_string())
                             .and_then(
                                 |_| target.build_elf_file(conf.isa_config, &basename_number)
