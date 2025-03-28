@@ -255,7 +255,7 @@ pub fn make_asm_files<B: BV, T: Target>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Adjust spare register numbers for the zero register
     let entry_reg = entry_reg + 1;
-    let _exit_reg = exit_reg + 1;
+    let exit_reg = exit_reg + 1;
 
     let harness_code = harness_code.unwrap_or(0x80000000);
     let harness_data = harness_data.unwrap_or(0x80000400);
