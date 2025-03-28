@@ -38,7 +38,7 @@ use std::error::Error;
 use std::fs::File;
 use std::num::ParseIntError;
 use std::ops::Range;
-use std::process::exit;
+use std::process::{Command,exit};
 
 // TODO: allow B64 or B129
 use isla_lib::bitvector::{b129::B129, BV};
@@ -102,6 +102,7 @@ fn parse_instruction_masks(little_endian: bool, args: &[String]) -> Vec<(&str, O
 enum Encodings<'a, B:BV> {
     ASL(asl_tag_files::Encodings),
     ACL2(Vec<acl2_insts::Instr<'a, B>>),
+    External(String, Vec<String>),
 }
 
 fn instruction_opcode<B: BV>(
@@ -120,6 +121,19 @@ fn instruction_opcode<B: BV>(
                     (B::from_u32(op), d)
                 }
                 ACL2(encodings) => acl2_insts::sample(encodings),
+                External(cmd, args) => {
+                    let out = Command::new(cmd)
+                        .args(args)
+                        .output()
+                        .expect("Failed to run instruction generator");
+                    let mut s = String::from_utf8(out.stdout).expect("Bad string from instruction generator");
+                    match s.find(' ') {
+                        None => (B::from_str(&s).expect(&format!("Bad instruction {}", s)),s),
+                        Some(i) => {
+                            let description = s.split_off(i+1);
+                            (B::from_str(&s[..i]).expect(&format!("Bad instruction {}", s)), description)},
+                    }
+                }
             };
         println!("Instruction {:#010x}: {}", opcode, description);
         (opcode, true, description)
@@ -162,6 +176,7 @@ fn isla_main() -> i32 {
     opts.optopt("e", "endianness", "instruction encoding endianness (little default)", "big/little");
     opts.optmulti("t", "tag-file", "parse instruction encodings from tag file", "<file>");
     opts.optopt("", "acl2-insts", "parse instruction encodings in ACL2 format", "<file>");
+    opts.optopt("", "generator", "execute command to generate an instruction", "<command>");
     opts.optopt("o", "output", "base name for output files", "<file>");
     opts.optopt("n", "number-gens", "number of tests to generate", "<number>");
     opts.optmulti("", "exclude", "exclude matching instructions from tag file", "<regexp>");
@@ -251,6 +266,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let tag_files = matches.opt_strs("tag-file");
     let acl2_file = matches.opt_str("acl2-insts");
+    let generator = matches.opt_str("generator");
     let encodings =
         if let Some(file_name) = acl2_file {
             let file = File::open(&file_name).unwrap_or_else(|err| panic!("Unable to open tag file {}: {}", file_name, err));
@@ -258,6 +274,10 @@ fn testgen_main<T: Target, B: BV>(
             let sexp = acl2_insts_parser::SexpParser::new().parse(Box::leak(Box::new(input))).unwrap();
             let instrs = acl2_insts::parse_instrs::<B>(Box::leak(Box::new(sexp))).unwrap();
             Encodings::ACL2(instrs)
+        } else if let Some(command) = generator {
+            let mut words = command.split_whitespace();
+            let program = words.next().expect("Instruction generator command cannot be empty");
+            Encodings::External(program.to_string(), words.map(|w| w.to_string()).collect())
         } else {
             let encodings = if tag_files.is_empty() {
                 asl_tag_files::Encodings::default()
