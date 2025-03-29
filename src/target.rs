@@ -1062,7 +1062,7 @@ impl Target for CHERIoT {
     fn gpr_prefix() -> &'static str { "zx" }
     fn gpr_pad() -> bool { false }
     // There's a handle_exception too, but it's not used
-    fn exception_stop_functions() -> Vec<String> { vec!["handle_mem_exception".to_string(), "handle_illegal".to_string(), "handle_cheri_cap_exception".to_string()] }
+    fn exception_stop_functions() -> Vec<String> { vec!["trap_handler".to_string(), "exception_handler".to_string()] }
     fn postprocess<'ir, B: BV>(&self,
         _shared_state: &SharedState<'ir, B>,
         _frame: &LocalFrame<B>,
