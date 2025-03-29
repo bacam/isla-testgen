@@ -966,7 +966,7 @@ impl Target for CHERIoT {
                     frame,
                     ctx,
                     solver,
-                    "capBitsToCapability",
+                    "isla_init_cap_of_bits",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
                 );
                 Some((var, val))
