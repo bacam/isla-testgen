@@ -976,9 +976,21 @@ impl Target for CHERIoT {
                     frame,
                     ctx,
                     solver,
-                    "isla_init_cap_of_bits",
+                    "capBitsToCapability",
                     vec![Val::Symbolic(tag), Val::Symbolic(content)]
                 );
+                let assert_val = execution::run_function_solver(
+                    shared_state,
+                    frame,
+                    ctx,
+                    solver,
+                    "isla_init_cap_property",
+                    vec![val.clone()]
+                );
+                match assert_val {
+                    Val::Symbolic(v) => solver.add(smtlib::Def::Assert(Exp::Var(v))),
+                    _ => panic!("Bad value from isla_init_cap_property!"),
+                };
                 Some((var, val))
             }
             _ => None
