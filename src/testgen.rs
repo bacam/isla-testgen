@@ -196,6 +196,7 @@ fn isla_main() -> i32 {
     opts.optopt("", "harness-code", "Start address for test harness code", "<start>");
     opts.optopt("", "harness-data", "Start address for test harness data", "<start>");
     opts.optopt("", "uart", "Address for basic UART", "<address>");
+    opts.optopt("", "no-tags-in", "Tags always read/write false in region", "<start-end>");
 
     let mut hasher = Sha256::new();
     let (matches, arch) = opts::parse::<B129>(&mut hasher, &opts);
@@ -313,6 +314,7 @@ fn testgen_main<T: Target, B: BV>(
                 vec![init_pc..init_pc + 0x10000]
             }
         };
+    let no_tags_in_regions : Vec<Range<u64>> = matches.opt_strs("no-tags-in").iter().map(|s| range_parse(&s)).collect();
     let init_pc = symbolic_code_regions[0].start;
 
     let harness_code = matches.opt_str("harness-code").map(|s| u64_parse(&s).expect("Bad harness code start address"));
@@ -350,7 +352,7 @@ fn testgen_main<T: Target, B: BV>(
 
     let (frame, checkpoint) = init_model(&shared_state, lets, regs, &memory, &target.init_function());
     let (frame, checkpoint, register_map) =
-        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target);
+        setup_init_regs(&shared_state, frame, checkpoint, &register_types, init_pc, &target, &no_tags_in_regions);
 
     let base_name = &matches.opt_str("output").unwrap_or(String::from("test"));
     let register_bias = !&matches.opt_present("uniform-registers");
@@ -372,6 +374,7 @@ fn testgen_main<T: Target, B: BV>(
         register_types: &register_types,
         symbolic_regions: &symbolic_regions,
         symbolic_code_regions: &symbolic_code_regions,
+        no_tags_in_regions: &no_tags_in_regions,
         assertion_reports: matches.opt_str("assertion-reports"),
         generate_testfile: matches.opt_present("test-file"),
         sparse: matches.opt_present("sparse"),
@@ -453,6 +456,7 @@ struct TestConf<'ir, B: BV> {
     register_types: &'ir HashMap<Name, Ty<Name>>,
     symbolic_regions: &'ir [Range<Address>],
     symbolic_code_regions: &'ir [Range<Address>],
+    no_tags_in_regions: &'ir [Range<Address>],
     assertion_reports: Option<String>,
     generate_testfile: bool,
     sparse: bool,

@@ -32,6 +32,7 @@ use crossbeam::queue::SegQueue;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::ops::Range;
 use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,7 +47,7 @@ use isla_lib::executor;
 use isla_lib::executor::{freeze_frame, Frame, LocalFrame, Run, StopConditions, TaskId, TaskState};
 use isla_lib::ir::*;
 use isla_lib::source_loc::SourceLoc;
-use isla_lib::memory::{Memory, SmtKind};
+use isla_lib::memory::{Address, Memory, SmtKind};
 use isla_lib::primop_util::smt_sbits;
 use isla_lib::register::RegisterBindings;
 use isla_lib::simplify::write_events;
@@ -90,6 +91,41 @@ struct SeqMemory {
     memory_var: Sym,
     tag_memory_var: Sym,
     addr_size: u32,
+    cap_addr_mask: u64,
+    no_tags_in_regions: Vec<Range<Address>>,
+}
+
+impl SeqMemory {
+    fn tag_constraint<B: BV>(
+        &self,
+        solver: &mut Solver<B>,
+        address: &smtlib::Exp<Sym>,
+        tag: &smtlib::Exp<Sym>,
+    ) -> Option<smtlib::Exp<Sym>> {
+        use isla_lib::smt::smtlib::Exp::*;
+        let mut i = self.no_tags_in_regions.iter();
+        if let Some(r) = i.next() {
+            let addr_var = match address {
+                Var(v) => *v,
+                _ => {
+                    let v = solver.fresh();
+                    solver.add(smtlib::Def::DefineConst(v, address.clone()));
+                    v
+                }
+            };
+            let mut prop = Or(Box::new(Bvult(Box::new(Var(addr_var)), Box::new(bits64(r.start, self.addr_size)))),
+                              Box::new(Bvule(Box::new(bits64(r.end, self.addr_size)), Box::new(Var(addr_var)))));
+            for r in i {
+                prop = And(Box::new(prop),
+                           Box::new(Or(Box::new(Bvult(Box::new(Var(addr_var)), Box::new(bits64(r.start, self.addr_size)))),
+                                       Box::new(Bvule(Box::new(bits64(r.end, self.addr_size)), Box::new(Var(addr_var)))))));
+            };
+            prop = Or(Box::new(Eq(Box::new(tag.clone()), Box::new(bits64(0, 1)))), Box::new(prop));
+            Some(prop)
+        } else {
+            None
+        }
+    }
 }
 
 impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
@@ -121,6 +157,9 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
                     Box::new(Exp::Select(Box::new(Exp::Var(self.tag_memory_var)), Box::new(addr_exp.clone()))),
                 );
                 read_prop = Exp::And(Box::new(read_prop), Box::new(prop));
+                if let Some(p) = self.tag_constraint(solver, &addr_exp, &tag_exp) {
+                    read_prop = Exp::And(Box::new(read_prop), Box::new(p))
+                };
                 Some(tag_exp)
             }
             None => None,
@@ -184,16 +223,18 @@ impl<B: BV> isla_lib::memory::MemoryCallbacks<B> for SeqMemory {
         }
         self.memory_var = solver.fresh();
         solver.add(Def::DefineConst(self.memory_var, mem_exp));
-        let (tag_exp, tag_addr_exp) = match tag {
+        // When clearing capability tags we might not start with an aligned address
+        let tag_addr_exp = Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bvnot(Box::new(bits64(self.cap_addr_mask, self.addr_size)))));
+        let tag_exp = match tag {
             Some(tag_value) => {
                 let tag_exp = smt_value(tag_value)
                     .unwrap_or_else(|err| panic!("Bad memory tag write value {:?}: {}", tag_value, err));
-                (tag_exp, addr_exp.clone())
+                if let Some(p) = self.tag_constraint(solver, &tag_addr_exp, &tag_exp) {
+                    solver.add(Def::Assert(p));
+                };
+                tag_exp
             }
-            None => (
-                bits64(0, 1),
-                Exp::Bvand(Box::new(addr_exp.clone()), Box::new(Exp::Bvnot(Box::new(bits64(0xfu64, self.addr_size))))),
-            ),
+            None => bits64(0, 1),
         };
         let tag_mem_exp =
             Exp::Store(Box::new(Exp::Var(self.tag_memory_var)), Box::new(tag_addr_exp), Box::new(tag_exp.clone()));
@@ -501,6 +542,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     register_types: &HashMap<Name, Ty<Name>>,
     init_pc: u64,
     target: &T,
+    no_tags_in_regions: &'ir [Range<Address>],
 ) -> (Frame<'ir, B>, Checkpoint<B>, HashMap<(String, Vec<GVAccessor<String>>), Sym>) {
     let mut local_frame = executor::unfreeze_frame(&frame);
     let ctx = smt::Context::new(smt::Config::new());
@@ -562,7 +604,7 @@ pub fn setup_init_regs<'ir, B: BV, T: Target>(
     target.init(shared_state, &mut local_frame, &mut solver, init_pc, &reg_vars);
 
     let memory_info: Box<dyn isla_lib::memory::MemoryCallbacks<B>> =
-        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var, addr_size: target.addr_size() });
+        Box::new(SeqMemory { translation_table: target.translation_table_info(), memory_var: memory, tag_memory_var, addr_size: target.addr_size(), cap_addr_mask: T::capability_address_mask(), no_tags_in_regions: Vec::from(no_tags_in_regions) });
     local_frame.memory_mut().set_client_info(memory_info);
     local_frame.memory().log();
 

@@ -117,6 +117,7 @@ where
         solver: &mut Solver<B>,
     ) -> Result<(), String>;
     fn has_capabilities(&self) -> bool;
+    fn capability_address_mask() -> u64;
     fn run_in_el0(&self) -> bool;
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String;
@@ -244,6 +245,9 @@ impl Target for Aarch64 {
     }
     fn has_capabilities(&self) -> bool {
         false
+    }
+    fn capability_address_mask() -> u64 {
+        0xf
     }
     fn run_in_el0(&self) -> bool {
 	false
@@ -633,6 +637,9 @@ impl Target for Morello {
     fn has_capabilities(&self) -> bool {
         !self.aarch64_compatible()
     }
+    fn capability_address_mask() -> u64 {
+        0xf
+    }
     fn run_in_el0(&self) -> bool {
 	match self.style {
 	    MorelloStyle::EL0 => true,
@@ -879,6 +886,9 @@ impl Target for X86 {
             X86Style::Cap => true,
         }
     }
+    fn capability_address_mask() -> u64 {
+        0xf
+    }
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("x86_fetch_decode_execute") }
@@ -1071,6 +1081,7 @@ impl Target for CHERIoT {
         Ok(())
     }
     fn has_capabilities(&self) -> bool { true }
+    fn capability_address_mask() -> u64 { 0x7 }
     fn run_in_el0(&self) -> bool { panic!("not implemented"); }
     // I'd like to move the stuff below to the config
     fn run_instruction_function() -> String { String::from("isla_testgen_step") }
