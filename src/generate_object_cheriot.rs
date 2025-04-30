@@ -141,13 +141,13 @@ fn get_exit_address<B: BV>(
 
 fn write_main_memory<B: BV>(
     asm_file: &mut File,
-    sections: &mut BTreeMap<u64, (String, Option<u64>)>,
+    sections: &mut BTreeMap<u64, (String, Option<usize>)>,
     pre_post_states: &PrePostStates<B>,
     harness_data: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut name = 0;
     for (region, contents) in pre_post_states.pre_memory.iter() {
-        sections.insert(region.start, (format!(".data{0}", name), None));
+        sections.insert(region.start, (format!(".data{0}", name), Some(contents.len())));
         writeln!(asm_file, ".section .data{},\"aw\"", name)?;
         write_bytes(asm_file, contents)?;
         name += 1;
@@ -262,7 +262,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     let uart = uart.unwrap_or(0x10000000);
 
     let mut asm_file = File::create(&format!("{}.s", base_name))?;
-    let mut sections: BTreeMap<u64, (String, Option<u64>)> = BTreeMap::new();
+    let mut sections: BTreeMap<u64, (String, Option<usize>)> = BTreeMap::new();
 
     let gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 15, &pre_post_states.pre_registers);
     let post_gprs = get_numbered_registers(T::gpr_prefix(), T::gpr_pad(), 15, &pre_post_states.post_registers);
@@ -299,6 +299,15 @@ pub fn make_asm_files<B: BV, T: Target>(
         name += 1;
     }
 
+    writeln!(asm_file, "")?;
+    write_main_memory(&mut asm_file, &mut sections, &pre_post_states, harness_data)?;
+
+    if target.has_capabilities() {
+    writeln!(asm_file, "")?;
+        write_capability_data(target, &mut asm_file, &gprs, &post_gprs, &system_registers, &post_system_registers, &pre_post_states)?;
+    }
+    writeln!(asm_file, "")?;
+
     // Adapted from a macro in the cheriot-rtos bootloader
     // Assumes the root memory cap is in c1
     writeln!(asm_file, ".macro cla_abs reg, src, symbol")?;
@@ -318,6 +327,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tcspecialr c1, mtdc")?;
     writeln!(asm_file, "\tcspecialr c2, mscratchc")?;
     writeln!(asm_file, "\tcla_abs 3, c1, initial_tag_locations")?;
+    writeln!(asm_file, "\tli x12, 0xffffffff")?;
     writeln!(asm_file, "tag_init_loop:")?;
     writeln!(asm_file, "\tclw x4, 0(c3)")?;
     writeln!(asm_file, "\tbeq x4, zero, tag_init_end")?;
@@ -331,7 +341,8 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\t/* choose root */")?;
     writeln!(asm_file, "\tand x11, x6, 0x100")?;
     writeln!(asm_file, "\tbne x11, zero, use_exe_root")?;
-    writeln!(asm_file, "\tand x11, x6, 0x400")?;
+    writeln!(asm_file, "\tsrli x11, x6, 8")?;
+    writeln!(asm_file, "\tand x11, x11, 0xe")?;
     writeln!(asm_file, "\tbne x11, zero, use_seal_root")?;
     writeln!(asm_file, "\t/* mem root */")?;
     writeln!(asm_file, "\tcmove c11, c1")?;
@@ -342,8 +353,11 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "use_seal_root:")?;
     writeln!(asm_file, "\tcmove c11, c2")?;
     writeln!(asm_file, "root_loaded:")?;
+    writeln!(asm_file, "\t/* skip bounds setting if whole address space */")?;
+    writeln!(asm_file, "\tbeq x9, x12, bounds_set")?;
     writeln!(asm_file, "\tcsetaddr c11, c11, x8")?;
     writeln!(asm_file, "\tcsetboundsexact c11, c11, x9")?;
+    writeln!(asm_file, "bounds_set:")?;
     writeln!(asm_file, "\tcsetaddr c11, c11, x10")?;
     writeln!(asm_file, "\tcandperm c11, c11, x6")?;
     writeln!(asm_file, "\tbeq x7, zero, skip_seal")?;
@@ -352,11 +366,33 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tskip_seal:")?;
     writeln!(asm_file, "\tcgettag x6, c11")?;
     writeln!(asm_file, "\tbeq x6, zero, bad_test")?;
-    // TODO: check contents
+    writeln!(asm_file, "\tbne x11, x5, bad_test")?;
+    writeln!(asm_file, "\tcgethigh x5, c5")?;
+    writeln!(asm_file, "\tcgethigh x6, c11")?;
+    writeln!(asm_file, "\tbne x6, x5, bad_test")?;
     writeln!(asm_file, "\tcsc c11, 0(c4)")?;
     writeln!(asm_file, "\tcincoffset c3, c3, 4")?;
     writeln!(asm_file, "\tj tag_init_loop")?;
     writeln!(asm_file, "tag_init_end:")?;
+
+    writeln!(asm_file, "\t/* Write load filter bitmap entries (if any) */")?;
+    for (start, (name, maybe_length)) in sections.iter() {
+        // TODO: parametrise the start address
+        // See also the linker code below
+        if *start >= 0x30000000_u64 {
+            if let Some(length) = maybe_length {
+                writeln!(asm_file, "\tcla_abs 3, c1, {}", name)?;
+                writeln!(asm_file, "\tcla_abs 4, c1, {}", start)?;
+                writeln!(asm_file, "\tcincoffset c7, c3, {}", length)?;
+                writeln!(asm_file, "write_loop_{}:", name)?;
+                writeln!(asm_file, "\tclb x6, 0(c3)")?;
+                writeln!(asm_file, "\tcsb x6, 0(c4)")?;
+                writeln!(asm_file, "\tcincoffset c3, c3, 1")?;
+                writeln!(asm_file, "\tcincoffset c4, c4, 1")?;
+                writeln!(asm_file, "\tbne x3, x7, write_loop_{}", name)?;
+            }
+        }
+    }
 
     writeln!(asm_file, "\t/* Set up exception handler */")?;
     writeln!(asm_file, "\tcspecialr c11, mtcc")?;
@@ -365,26 +401,31 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tcsetaddr c11, c11, x3")?;
     writeln!(asm_file, "\tcspecialw mtcc, c11")?;
 
+    // Make sure the register we use for the initial cjr isn't c1 (aka cra), which has
+    // different restrictions, and that we use something else for the max cap reg, because
+    // the cla_abs macro can't use the same reg twice.
+    let (jump_reg, max_reg) = if entry_reg == 1 { (exit_reg, entry_reg) } else { (entry_reg, exit_reg) };
+
     writeln!(asm_file, "\t/* Write general purpose registers */")?;
-    writeln!(asm_file, "\tcmove c{}, c1", exit_reg)?;
-    writeln!(asm_file, "\tcla_abs {}, c{}, initial_cap_values", entry_reg, exit_reg)?;
+    writeln!(asm_file, "\tcmove c{}, c1", max_reg)?;
+    writeln!(asm_file, "\tcla_abs {}, c{}, initial_cap_values", jump_reg, max_reg)?;
     for (i, (reg, _value)) in gprs.iter().enumerate() {
-        writeln!(asm_file, "\tclc c{}, {}(c{})", *reg, 8*i as u32, entry_reg)?;
+        writeln!(asm_file, "\tclc c{}, {}(c{})", *reg, 8*i as u32, jump_reg)?;
     }
 
     for (reg, value) in &system_registers {
         //TODO
     }
-
     writeln!(asm_file, "\t/* Start test */")?;
-    writeln!(asm_file, "\tcla_abs {}, c{}, initial_PCC_value", entry_reg, exit_reg)?;
-    writeln!(asm_file, "\tclc c{0}, 0(c{0})", entry_reg)?;
-    writeln!(asm_file, "\tcjr c{}", entry_reg)?;
+    writeln!(asm_file, "\tcla_abs {}, c{}, initial_PCC_value", jump_reg, max_reg)?;
+    writeln!(asm_file, "\tclc c{0}, 0(c{0})", jump_reg)?;
+    writeln!(asm_file, "\tcjr c{}", jump_reg)?;
     
     // ------
 
     // The bottom two bits of finish's location need to be zero because they're used to indicate
     // the mode in MTCC, rather than part of the address.
+    writeln!(asm_file, "")?;
     writeln!(asm_file, ".align 2")?;
     writeln!(asm_file, "finish:")?;
 
@@ -402,7 +443,7 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tcla_abs 2, c1, final_PCC_value")?;
     writeln!(asm_file, "\tclc c2, 0(c2)")?;
     writeln!(asm_file, "\tcspecialr c3, MEPCC")?;
-    writeln!(asm_file, "csetequalexact x4, c2, c3")?;
+    writeln!(asm_file, "\tcsetequalexact x4, c2, c3")?;
     writeln!(asm_file, "\tbeq x4, zero, comparison_fail")?;
 
     writeln!(asm_file, "\t/* Check memory */")?;
@@ -421,6 +462,17 @@ pub fn make_asm_files<B: BV, T: Target>(
         writeln!(asm_file, "\tbne x2, x4, check_data_loop{}", name)?;
         name += 1;
     }
+
+    writeln!(asm_file, "\t/* Clear load filter before checking tags */")?;
+    // TODO: parametrise
+    writeln!(asm_file, "\tcla_abs 2, c1, 0x30000000")?;
+    writeln!(asm_file, "\tli x3, 0x30000800")?;
+    writeln!(asm_file, "filter_clear_loop:")?;
+    writeln!(asm_file, "\tcsw zero, 0(c2)")?;
+    writeln!(asm_file, "\tcincoffset c2, c2, 4")?;
+    writeln!(asm_file, "\tbne x2, x3, filter_clear_loop")?;
+    writeln!(asm_file, "")?;
+
     writeln!(asm_file, "\tcla_abs 2, c1, final_tag_set_locations")?;
     writeln!(asm_file, "check_set_tags_loop:")?;
     writeln!(asm_file, "\tclw x3, 0(c2)")?;
@@ -451,24 +503,30 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "\tj write_result")?;
     writeln!(asm_file, "\t.global bad_test")?;
     writeln!(asm_file, "bad_test:")?;
+    writeln!(asm_file, "\tcspecialr c1, mtdc")?;
     writeln!(asm_file, "\tcla_abs 2, c1, bad_message")?;
     writeln!(asm_file, "\tj write_result")?;
     writeln!(asm_file, "\t.global comparison_fail")?;
     writeln!(asm_file, "comparison_fail:")?;
+    writeln!(asm_file, "\tcspecialr c1, mtdc")?;
     writeln!(asm_file, "\tcla_abs 2, c1, fail_message")?;
     writeln!(asm_file, "write_result:")?;
-    writeln!(asm_file, "\t/* Writes and exit code for trickbox and uart simulators */")?;
+    writeln!(asm_file, "\t/* Writes message to uart */")?;
     writeln!(asm_file, "\tcla_abs 3, c1, uart")?;
+    writeln!(asm_file, "\tli x4, 0x05e5f0003")?;
+    writeln!(asm_file, "\tcsw x4, 0x10(c3)")?;
+    writeln!(asm_file, "\tli x4, 0x00000003")?;
+    writeln!(asm_file, "\tcsw x4, 0x20(c3)")?; 
     writeln!(asm_file, "write_result_loop:")?;
     writeln!(asm_file, "\tclb x4, 0(c2)")?;
     writeln!(asm_file, "\tbeq x4, zero, haltsim")?;
-    writeln!(asm_file, "\tcsw x4, 0(c3)")?;
+    writeln!(asm_file, "\tcsw x4, 0x1c(c3)")?;
     writeln!(asm_file, "\tcincoffset c2, c2, 1")?;
     writeln!(asm_file, "\tj write_result_loop")?;
 
     writeln!(asm_file, "haltsim:")?;
     writeln!(asm_file, "\tli x4, 0x80")?;
-    writeln!(asm_file, "\tcsb x4, 0(c3)")?;
+    writeln!(asm_file, "\t#csb x4, 0(c3)")?;
     writeln!(asm_file, "loop_forever:")?;
     writeln!(asm_file, "\tj loop_forever")?;
 
@@ -479,22 +537,17 @@ pub fn make_asm_files<B: BV, T: Target>(
     writeln!(asm_file, "fail_message:")?;
     writeln!(asm_file, "\t.ascii \"FAILED\\n\\000\"")?;
 
-    writeln!(asm_file, "")?;
-    write_main_memory(&mut asm_file, &mut sections, &pre_post_states, harness_data)?;
-
-    if target.has_capabilities() {
-    writeln!(asm_file, "")?;
-        write_capability_data(target, &mut asm_file, &gprs, &post_gprs, &system_registers, &post_system_registers, &pre_post_states)?;
-    }
-
     let mut ld_file = File::create(&format!("{}.ld", base_name))?;
     writeln!(ld_file, "SECTIONS {{")?;
 
-    for (vma, (name, lma_opt)) in &sections {
-        if let Some(lma) = lma_opt {
-            writeln!(ld_file, "{0} {1:#018x} : AT({2:#018x}) {{ *({0}) }}", name, vma, lma)?;
-        } else {
+    for (vma, (name, _len)) in &sections {
+        // The load filter bitmap is much higher than the rest of the test, write it
+        // out alongside then move it using code above.
+        if *vma < 0x3000_0000_u64 {
             writeln!(ld_file, "{0} {1:#018x} : {{ *({0}) }}", name, vma)?;
+        } else {
+            // Load filter
+            writeln!(ld_file, "{0} : {{ *({0}) }}", name)?;
         }
     }
 
